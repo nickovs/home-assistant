@@ -75,13 +75,6 @@ class LutronLight(LutronDevice, Light):
         self._lutron_device.level = 0
 
     @property
-    def device_state_attributes(self):
-        """Return the state attributes."""
-        attr = {}
-        attr['Lutron Integration ID'] = self._lutron_device.id
-        return attr
-
-    @property
     def is_on(self):
         """Return true if device is on."""
         return self._lutron_device.last_level() > 0

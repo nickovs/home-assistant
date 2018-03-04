@@ -23,6 +23,11 @@ _LOGGER = logging.getLogger(__name__)
 LUTRON_CONTROLLER = 'lutron_controller'
 LUTRON_DEVICES = 'lutron_devices'
 
+LUTRON_BUTTON_EVENT = 'lutron.button_event'
+
+LUTRON_KEYPAD_ACTION_PRESS = 3
+LUTRON_KEYPAD_ACTION_RELEASE = 4
+
 CONFIG_SCHEMA = vol.Schema({
     DOMAIN: vol.Schema({
         vol.Required(CONF_HOST): cv.string,
@@ -37,25 +42,47 @@ def setup(hass, base_config):
     from pylutron import Lutron
 
     hass.data[LUTRON_CONTROLLER] = None
-    hass.data[LUTRON_DEVICES] = {'light': [], 'cover': []}
+    hass.data[LUTRON_DEVICES] = {'light': [], 'cover': [], 'binary_sensor': []}
 
     config = base_config.get(DOMAIN)
-    hass.data[LUTRON_CONTROLLER] = Lutron(
+    controller = Lutron(
         config[CONF_HOST], config[CONF_USERNAME], config[CONF_PASSWORD])
-
+    hass.data[LUTRON_CONTROLLER] = controller
     hass.data[LUTRON_CONTROLLER].load_xml_db()
     hass.data[LUTRON_CONTROLLER].connect()
     _LOGGER.info("Connected to main repeater at %s", config[CONF_HOST])
 
+    # The event forwarder function is defined here in order to capture
+    # the hass object in the closure, otherwise we'd have to pack up a
+    # whole new context object
+    def lutron_event_forwarder(entity, args, context):
+        area = context
+        component = int(args[0])
+        action = int(args[1])
+        params = [int(x) for x in args[2:]]
+        if (action == LUTRON_KEYPAD_ACTION_PRESS or
+            action == LUTRON_KEYPAD_ACTION_RELEASE):
+            data = {'area':   area.name,
+                    'keypad': entity.name,
+                    'button': component,
+                    'press':  (action == LUTRON_KEYPAD_ACTION_PRESS)}                    
+            hass.bus.fire(LUTRON_BUTTON_EVENT, data)
+    
     # Sort our devices into types
-    for area in hass.data[LUTRON_CONTROLLER].areas:
+    for area in controller.areas:
         for output in area.outputs:
             if output.type == 'SYSTEM_SHADE':
                 hass.data[LUTRON_DEVICES]['cover'].append((area.name, output))
             else:
                 hass.data[LUTRON_DEVICES]['light'].append((area.name, output))
+        for sensor in area.sensors:
+            hass.data[LUTRON_DEVICES]['binary_sensor'].append(area.name, sensor)
 
-    for component in ('light', 'cover'):
+        for keypad in area.keypads:
+            controller.subscribe(keypad, lutron_event_forwarder,
+                                 send_args=True, context=area)
+            
+    for component in ('light', 'cover', 'binary_sensor'):
         discovery.load_platform(hass, component, DOMAIN, None, base_config)
     return True
 
@@ -90,3 +117,11 @@ class LutronDevice(Entity):
     def should_poll(self):
         """No polling needed."""
         return False
+
+    @property
+    def device_state_attributes(self):
+        """Return the state attributes."""
+        attr = {}
+        attr['Lutron Integration ID'] = self._lutron_device.id
+        return attr
+
